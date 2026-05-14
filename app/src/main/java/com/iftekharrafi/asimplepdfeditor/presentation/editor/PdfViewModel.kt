@@ -204,7 +204,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- মেগা ফিচার: Native Multiple Page Saving ---
     fun saveEntirePdf() {
-        viewModelScope.launch(Dispatchers.Default) {
+        viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(isSaving = true) }
 
             try {

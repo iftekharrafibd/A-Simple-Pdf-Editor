@@ -2,9 +2,7 @@ package com.iftekharrafi.asimplepdfeditor.presentation.editor
 
 import android.graphics.Bitmap
 import androidx.compose.ui.graphics.Color
-import com.iftekharrafi.asimplepdfeditor.domain.model.DrawingStroke
 import com.iftekharrafi.asimplepdfeditor.domain.model.PageContent
-import com.iftekharrafi.asimplepdfeditor.domain.model.TextOverlay
 
 // ১. নতুন: কোন টুল সিলেক্ট করা আছে সেটা বোঝার জন্য Enum
 enum class EditorTool {
