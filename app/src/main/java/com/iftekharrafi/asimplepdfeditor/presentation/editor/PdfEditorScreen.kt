@@ -206,8 +206,11 @@ fun PdfEditorScreen(
                                         },
                                         onDrag = { change, _ ->
                                             change.consume()
-                                            // আঙুল নাড়ালে রেখা আঁকা হবে
-                                            currentPath?.lineTo(change.position.x, change.position.y)
+                                            currentPath?.let {
+                                                it.lineTo(change.position.x, change.position.y)
+                                                // Path copy kore naya reference banano
+                                                currentPath = Path().apply { addPath(it) }
+                                            }
                                         },
                                         onDragEnd = {
                                             // আঙুল তুলে নিলে Path টা ভিউমডেলে সেভ হয়ে যাবে
