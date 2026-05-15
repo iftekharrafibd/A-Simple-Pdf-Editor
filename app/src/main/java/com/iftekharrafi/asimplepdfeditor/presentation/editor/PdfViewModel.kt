@@ -2,6 +2,12 @@ package com.iftekharrafi.asimplepdfeditor.presentation.editor
 
 import android.app.Application
 import android.content.ContentValues
+import android.graphics.Bitmap
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
+import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
@@ -11,11 +17,18 @@ import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
 import android.widget.Toast
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asAndroidPath
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.createBitmap
+import androidx.core.graphics.withRotation
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.application
 import androidx.lifecycle.viewModelScope
+import com.iftekharrafi.asimplepdfeditor.data.local.entity.PdfEntity
 import com.iftekharrafi.asimplepdfeditor.domain.model.DrawingStroke
 import com.iftekharrafi.asimplepdfeditor.domain.model.PageContent
+import com.iftekharrafi.asimplepdfeditor.domain.repository.PdfRepository
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,16 +37,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import androidx.compose.ui.graphics.asAndroidPath
-import androidx.compose.ui.graphics.toArgb
-import android.graphics.Matrix
-import android.graphics.Paint
-import android.graphics.Typeface
-import androidx.lifecycle.application
-import androidx.core.graphics.withRotation
+import javax.inject.Inject
 
-
-class PdfViewModel(application: Application) : AndroidViewModel(application) {
+@HiltViewModel
+class PdfViewModel @Inject constructor(
+    application: Application,
+    private val repository: PdfRepository
+) : AndroidViewModel(application) {
 
     private val _state = MutableStateFlow(PdfEditorState())
     val state = _state.asStateFlow()
@@ -170,6 +180,9 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
             } else content
         }
     }
+    fun setBrushSize(size: Float) {
+        _state.update { it.copy(brushSize = size) }
+    }
 
     // --- PDF Zoom & Pan Control ---
     fun onPdfTransformed(panX: Float, panY: Float, zoomChange: Float) {
@@ -205,7 +218,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
     // --- মেগা ফিচার: Native Multiple Page Saving ---
     fun saveEntirePdf() {
         viewModelScope.launch(Dispatchers.IO) {
-            _state.update { it.copy(isSaving = true) }
+            _state.update { it.copy(isSaving = true, savedFileUri = null) } // সেভিং শুরু, আগের URI ক্লিয়ার
 
             try {
                 val context = getApplication<Application>().applicationContext
@@ -222,7 +235,6 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
 
                     val originalPage = pdfRenderer!!.openPage(i)
 
-                    // পিডিএফ পেজের অরিজিনাল সাইজ (ভালো কোয়ালিটির জন্য ২ গুণ বড় করে রেন্ডার করছি)
                     val width = originalPage.width * 2
                     val height = originalPage.height * 2
 
@@ -230,70 +242,63 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     pageBitmap.eraseColor(android.graphics.Color.WHITE)
                     originalPage.render(pageBitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
 
-                    // --- ম্যাজিক শুরু: যদি এই পেজে ইউজারের কোনো এডিট থাকে ---
                     val pageContent = currentState.pageContents[i]
                     if (pageContent != null && (pageContent.drawnStrokes.isNotEmpty() || pageContent.textOverlay.text.isNotEmpty())) {
 
-                        // অ্যান্ড্রয়েডের নেটিভ ক্যানভাস তৈরি করা হলো
                         val nativeCanvas = android.graphics.Canvas(pageBitmap)
-
-                        // স্ক্রিনের সাথে পিডিএফের রেশিও বের করা হচ্ছে
                         val scaleX = width.toFloat() / currentState.canvasWidth
                         val scaleY = height.toFloat() / currentState.canvasHeight
 
-                        // ১. ড্রয়িং (Strokes) রেন্ডার করা
-                        val paint = Paint().apply {
-                            style = Paint.Style.STROKE
-                            strokeCap = Paint.Cap.ROUND
-                            strokeJoin = Paint.Join.ROUND
-                            isAntiAlias = true
+                        if (pageContent.drawnStrokes.isNotEmpty()) {
+                            val drawingBitmap = createBitmap(width, height)
+                            val drawingCanvas = android.graphics.Canvas(drawingBitmap)
+
+                            val paint = Paint().apply {
+                                style = Paint.Style.STROKE
+                                strokeCap = Paint.Cap.ROUND
+                                strokeJoin = Paint.Join.ROUND
+                                isAntiAlias = true
+                            }
+
+                            val matrix = Matrix().apply { setScale(scaleX, scaleY) }
+
+                            pageContent.drawnStrokes.forEach { stroke ->
+                                paint.strokeWidth = stroke.strokeWidth * scaleX
+                                if (stroke.isEraser) {
+                                    paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
+                                    paint.color = android.graphics.Color.TRANSPARENT
+                                } else {
+                                    paint.xfermode = null
+                                    paint.color = stroke.color.toArgb()
+                                }
+                                val androidPath = android.graphics.Path(stroke.path.asAndroidPath())
+                                androidPath.transform(matrix)
+                                drawingCanvas.drawPath(androidPath, paint)
+                            }
+                            nativeCanvas.drawBitmap(drawingBitmap, 0f, 0f, null)
+                            drawingBitmap.recycle()
                         }
 
-                        val matrix = Matrix().apply { setScale(scaleX, scaleY) }
-
-                        pageContent.drawnStrokes.forEach { stroke ->
-                            paint.color = stroke.color.toArgb()
-                            paint.strokeWidth = stroke.strokeWidth * scaleX
-
-                            // Compose Path কে Android Path এ কনভার্ট করা
-                            val androidPath = android.graphics.Path(stroke.path.asAndroidPath())
-                            androidPath.transform(matrix) // পাথটাকে স্কেল করে বড় করা হলো
-
-                            nativeCanvas.drawPath(androidPath, paint)
-                        }
-
-                        // ২. টেক্সট (Text) রেন্ডার করা
                         val textOverlay = pageContent.textOverlay
                         if (textOverlay.text.isNotEmpty()) {
                             val textPaint = Paint().apply {
                                 color = textOverlay.color.toArgb()
-                                // আনুমানিক সাইজ স্কেলিং
                                 textSize = 60f * scaleX * textOverlay.scale
                                 typeface = Typeface.DEFAULT_BOLD
                                 isAntiAlias = true
                                 textAlign = Paint.Align.CENTER
                             }
-
                             val centerX = width / 2f
                             val centerY = height / 2f
-
                             val textX = centerX + (textOverlay.offsetX * scaleX)
                             val textY = centerY + (textOverlay.offsetY * scaleY)
 
                             nativeCanvas.withRotation(textOverlay.rotation, textX, textY) {
-                                // টেক্সটের পজিশন ঠিক করা (Baseline adjustment)
-                                drawText(
-                                    textOverlay.text,
-                                    textX,
-                                    textY + (textPaint.textSize / 3),
-                                    textPaint
-                                )
+                                drawText(textOverlay.text, textX, textY + (textPaint.textSize / 3), textPaint)
                             }
                         }
                     }
-                    // --- ম্যাজিক শেষ ---
 
-                    // পেজটা পিডিএফে লেখা হচ্ছে
                     val pageInfo = PdfDocument.PageInfo.Builder(width, height, i + 1).create()
                     val page = newPdfDocument.startPage(pageInfo)
                     page.canvas.drawBitmap(pageBitmap, 0f, 0f, null)
@@ -303,8 +308,8 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     pageBitmap.recycle()
                 }
 
-                // ... আগের মতোই ফাইল সেভ করার কোড (MediaStore বা FileOutputStream) ...
                 val fileName = "AmarPDF_Pro_${System.currentTimeMillis()}.pdf"
+                var finalUri: Uri? = null
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     val resolver = context.contentResolver
@@ -319,6 +324,7 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                         resolver.openOutputStream(uri)?.use { outputStream ->
                             newPdfDocument.writeTo(outputStream)
                         }
+                        finalUri = uri
                     }
                 } else {
                     val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -329,18 +335,32 @@ class PdfViewModel(application: Application) : AndroidViewModel(application) {
                     FileOutputStream(file).use { outputStream ->
                         newPdfDocument.writeTo(outputStream)
                     }
+                    finalUri = Uri.fromFile(file)
                 }
 
                 newPdfDocument.close()
 
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(context, "All Pages Saved! (Downloads)", Toast.LENGTH_LONG).show()
+                    finalUri?.let { savedUri ->
+                        // --- নতুন: ডাটাবেসে ফাইল আপডেট এবং শেয়ার URI স্টেট আপডেট ---
+                        viewModelScope.launch {
+                            repository.insertPdf(
+                                PdfEntity(
+                                    fileUri = savedUri.toString(),
+                                    fileName = fileName,
+                                    lastOpened = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                        _state.update { it.copy(savedFileUri = savedUri) }
+                    }
+                    Toast.makeText(context, "Saved & Added to Recent!", Toast.LENGTH_LONG).show()
                 }
 
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(application.applicationContext, "Error saving: ${e.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(getApplication(), "Error saving: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             } finally {
                 _state.update { it.copy(isSaving = false) }

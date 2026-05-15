@@ -1,5 +1,7 @@
 package com.iftekharrafi.asimplepdfeditor.presentation.editor
 
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -15,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.outlined.InsertDriveFile
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Create
@@ -31,6 +34,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -47,7 +52,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -58,6 +65,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -81,17 +89,24 @@ fun PdfEditorScreen(
     pdfUri: Uri?,
     onBackClick: () -> Unit
 ) {
+    val context = LocalContext.current
+
     // নতুন: শুধুমাত্র একটি স্টেট কালেক্ট করা হলো!
     val state by viewModel.state.collectAsState()
     val currentPageContent = state.pageContents[state.currentPageIndex] ?: PageContent()
 
-    val captureController = rememberCaptureController()
-    val coroutineScope = rememberCoroutineScope()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var currentPath by remember { mutableStateOf<Path?>(null) }
     LaunchedEffect(pdfUri) {
         if (pdfUri != null) {
             viewModel.loadPdf(uri = pdfUri)
+        }
+    }
+
+    // ফাইল সেভ হওয়া মাত্রই শেয়ার করার অপশন দেখাবে
+    LaunchedEffect(state.savedFileUri) {
+        state.savedFileUri?.let { uri ->
+            sharePdf(context, uri)
         }
     }
 
@@ -221,32 +236,32 @@ fun PdfEditorScreen(
                         Canvas(
                             modifier = Modifier
                                 .fillMaxSize()
+                                // --- ম্যাজিক: ইরেজারকে কাজ করানোর জন্য এই লেয়ার স্ট্র্যাটেজি দিতেই হবে ---
+                                .graphicsLayer(compositingStrategy = CompositingStrategy.Offscreen)
                                 .pointerInput(state.selectedTool) {
-                                    // শুধুমাত্র DRAW টুল সিলেক্ট থাকলে ড্রয়িং কাজ করবে
-                                    if (state.selectedTool == EditorTool.DRAW) {
+                                    // Draw অথবা Eraser টুল সিলেক্ট থাকলে কাজ করবে
+                                    if (state.selectedTool == EditorTool.DRAW || state.selectedTool == EditorTool.ERASER) {
                                         detectDragGestures(
                                             onDragStart = { offset ->
-                                                // আঙুল ছোঁয়ালে নতুন Path শুরু হবে
-                                                currentPath = Path().apply {
-                                                    moveTo(offset.x, offset.y)
-                                                }
+                                                currentPath = Path().apply { moveTo(offset.x, offset.y) }
                                             },
                                             onDrag = { change, _ ->
                                                 change.consume()
-                                                currentPath?.let {
-                                                    it.lineTo(change.position.x, change.position.y)
-                                                    // Path copy kore naya reference banano
-                                                    currentPath = Path().apply { addPath(it) }
+                                                currentPath?.let { path ->
+                                                    path.lineTo(change.position.x, change.position.y)
+                                                    currentPath = null
+                                                    currentPath = path
                                                 }
                                             },
                                             onDragEnd = {
-                                                // আঙুল তুলে নিলে Path টা ভিউমডেলে সেভ হয়ে যাবে
                                                 currentPath?.let { path ->
                                                     viewModel.addStroke(
                                                         DrawingStroke(
                                                             path = path,
                                                             color = state.brushColor,
-                                                            strokeWidth = state.brushSize
+                                                            strokeWidth = state.brushSize,
+                                                            // টুল অনুযায়ী ইরেজার কি না সেট করা
+                                                            isEraser = state.selectedTool == EditorTool.ERASER
                                                         )
                                                     )
                                                 }
@@ -256,29 +271,31 @@ fun PdfEditorScreen(
                                     }
                                 }
                         ) {
-                            // সেভ করা সব স্ট্রোক ড্র করা হচ্ছে
                             currentPageContent.drawnStrokes.forEach { stroke ->
                                 drawPath(
                                     path = stroke.path,
-                                    color = stroke.color,
+                                    color = if (stroke.isEraser) Color.Transparent else stroke.color,
                                     style = Stroke(
                                         width = stroke.strokeWidth,
                                         cap = StrokeCap.Round,
                                         join = StrokeJoin.Round
-                                    )
+                                    ),
+                                    // ইরেজার হলে Clear ব্লেন্ড মোড ব্যবহার হবে
+                                    blendMode = if (stroke.isEraser) BlendMode.Clear else BlendMode.SrcOver
                                 )
                             }
 
-                            // রিয়েল-টাইমে যে রেখাটা আঁকা হচ্ছে সেটা ড্র করা হচ্ছে
+                            // রিয়েল টাইমে আঁকা বা মোছা
                             currentPath?.let { path ->
                                 drawPath(
                                     path = path,
-                                    color = state.brushColor,
+                                    color = if (state.selectedTool == EditorTool.ERASER) Color.Transparent else state.brushColor,
                                     style = Stroke(
                                         width = state.brushSize,
                                         cap = StrokeCap.Round,
                                         join = StrokeJoin.Round
-                                    )
+                                    ),
+                                    blendMode = if (state.selectedTool == EditorTool.ERASER) BlendMode.Clear else BlendMode.SrcOver
                                 )
                             }
                         }
@@ -347,6 +364,14 @@ fun PdfEditorScreen(
                         imageVector = Icons.Default.Create, // অথবা Brush আইকন
                         contentDescription = "Draw",
                         tint = if (state.selectedTool == EditorTool.DRAW) AccentPink else Color.White.copy(alpha = 0.6f)
+                    )
+                }
+                // --- নতুন: Eraser Tool Button ---
+                IconButton(onClick = { viewModel.selectTool(EditorTool.ERASER) }) {
+                    Icon(
+                        imageVector = Icons.Default.AutoFixHigh, // ইরেজার আইকন
+                        contentDescription = "Eraser",
+                        tint = if (state.selectedTool == EditorTool.ERASER) Color.White else Color.White.copy(alpha = 0.6f)
                     )
                 }
             }
@@ -551,6 +576,28 @@ fun PdfEditorScreen(
                                 )
                             }
                         }
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        // --- নতুন: ব্রাশ সাইজ কন্ট্রোলার (Slider) ---
+                        Text(
+                            text = "Brush Size: ${state.brushSize.toInt()}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = Color.White.copy(alpha = 0.5f),
+                            modifier = Modifier.align(Alignment.Start)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Slider(
+                            value = state.brushSize,
+                            onValueChange = { viewModel.setBrushSize(it) },
+                            valueRange = 2f..40f, // ২ থেকে ৪০ পর্যন্ত সাইজ
+                            colors = SliderDefaults.colors(
+                                thumbColor = AccentBlue,
+                                activeTrackColor = AccentBlue,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.1f)
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                     else -> {}
                 }
@@ -615,3 +662,11 @@ fun PdfEditorScreen(
             }
         }
     }}
+fun sharePdf(context: Context, uri: Uri) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "application/pdf"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Share PDF via"))
+}

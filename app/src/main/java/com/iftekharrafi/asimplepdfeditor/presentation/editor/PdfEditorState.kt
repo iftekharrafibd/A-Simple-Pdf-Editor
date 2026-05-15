@@ -1,6 +1,7 @@
 package com.iftekharrafi.asimplepdfeditor.presentation.editor
 
 import android.graphics.Bitmap
+import android.net.Uri
 import androidx.compose.ui.graphics.Color
 import com.iftekharrafi.asimplepdfeditor.domain.model.PageContent
 
@@ -33,5 +34,6 @@ data class PdfEditorState(
     val pdfOffsetY: Float = 0f,
     // --- নতুন: স্ক্রিনের সাইজ মেপে রাখার জন্য ---
     val canvasWidth: Float = 1f,
-    val canvasHeight: Float = 1f
+    val canvasHeight: Float = 1f,
+    val savedFileUri: Uri? = null // নতুন: সেভ করা ফাইলের URI
 )
