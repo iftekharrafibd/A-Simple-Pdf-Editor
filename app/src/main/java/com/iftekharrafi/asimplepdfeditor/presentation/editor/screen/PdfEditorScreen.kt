@@ -103,9 +103,8 @@ fun PdfEditorScreen(
                 .weight(1f)
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp, vertical = 8.dp)
-                .clipToBounds() // জুম করার পর পিডিএফ যেন এডিটর এরিয়ার বাইরে না চলে যায়
+                .clipToBounds()
                 .pointerInput(state.selectedTool) {
-                    // শুধুমাত্র যখন কোনো টুল সিলেক্ট করা থাকবে না (NONE), তখন জুম কাজ করবে
                     if (state.selectedTool == EditorTool.NONE) {
                         detectTransformGestures { _, pan, zoom, _ ->
                             viewModel.onPdfTransformed(pan.x, pan.y, zoom)
