@@ -57,8 +57,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
-import com.iftekharrafi.asimplepdfeditor.data.local.entity.PdfEntity
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.iftekharrafi.asimplepdfeditor.domain.model.RecentPdf
 import com.iftekharrafi.asimplepdfeditor.ui.theme.AccentBlue
 import com.iftekharrafi.asimplepdfeditor.ui.theme.AccentCyan
 import com.iftekharrafi.asimplepdfeditor.ui.theme.AccentPink
@@ -360,7 +360,7 @@ fun HomeScreen(
 
 @Composable
 private fun RecentFileItem(
-    pdf: PdfEntity,
+    pdf: RecentPdf,
     onClick: () -> Unit
 ) {
     Row(

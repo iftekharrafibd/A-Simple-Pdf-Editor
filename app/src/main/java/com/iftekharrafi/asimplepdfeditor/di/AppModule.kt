@@ -16,7 +16,6 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    // পুরো অ্যাপে ডেটাবেসের একটাই ইনস্ট্যান্স (Singleton) থাকবে, যেন মেমরি লিক না হয়
     @Provides
     @Singleton
     fun provideAppDatabase(app: Application): AppDatabase {

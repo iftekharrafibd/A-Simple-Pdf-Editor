@@ -7,7 +7,7 @@ import androidx.core.net.toUri
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
-import com.iftekharrafi.asimplepdfeditor.presentation.editor.PdfEditorScreen
+import com.iftekharrafi.asimplepdfeditor.presentation.editor.screen.PdfEditorScreen
 import com.iftekharrafi.asimplepdfeditor.presentation.home.HomeScreen
 
 @Composable

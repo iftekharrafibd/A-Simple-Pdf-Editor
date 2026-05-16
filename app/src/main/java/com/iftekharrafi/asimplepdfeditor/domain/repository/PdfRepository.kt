@@ -1,10 +1,10 @@
 package com.iftekharrafi.asimplepdfeditor.domain.repository
 
-import com.iftekharrafi.asimplepdfeditor.data.local.entity.PdfEntity
+import com.iftekharrafi.asimplepdfeditor.domain.model.RecentPdf
 import kotlinx.coroutines.flow.Flow
 
 interface PdfRepository {
-    fun getAllRecentPdfs(): Flow<List<PdfEntity>>
-    suspend fun insertPdf(pdf: PdfEntity)
-    suspend fun deletePdf(pdf: PdfEntity)
+    fun getAllRecentPdfs(): Flow<List<RecentPdf>>
+    suspend fun insertPdf(recentPdf: RecentPdf)
+    suspend fun deletePdf(recentPdf: RecentPdf)
 }
