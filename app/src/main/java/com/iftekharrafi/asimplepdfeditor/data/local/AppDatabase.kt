@@ -14,6 +14,4 @@ abstract class AppDatabase : RoomDatabase() {
 
     abstract val pdfDao: PdfDao
 
-    // উল্লেখ্য: আমরা এখানে কোনো companion object (Singleton) রাখছি না।
-    // কারণ প্রোডাকশন লেভেলে এই কাজটা আমরা Dagger-Hilt (DI) দিয়ে হ্যান্ডেল করব!
 }
