@@ -14,5 +14,9 @@ data class TextOverlay(
     val scale: Float = 1f,
     val rotation: Float = 0f,
     val uiWidth: Float = 0f,
-    val uiHeight: Float = 0f
+    val uiHeight: Float = 0f,
+    val alignment: String = "CENTER", // "LEFT", "CENTER", "RIGHT"
+    val isBold: Boolean = false,
+    val isItalic: Boolean = false,
+    val isUnderline: Boolean = false
 )

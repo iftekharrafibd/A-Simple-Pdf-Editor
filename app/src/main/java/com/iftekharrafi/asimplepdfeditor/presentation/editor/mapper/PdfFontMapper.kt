@@ -19,15 +19,21 @@ fun PdfFont.toComposeFontFamily(): FontFamily {
 }
 
 // ২. Native Android Canvas (Paint) er jonno mapper
-fun PdfFont.toNativeTypeface(context: Context): Typeface {
+fun PdfFont.toNativeTypeface(context: Context, isBold: Boolean, isItalic: Boolean = false): Typeface {
+    val style = when {
+        isBold && isItalic -> Typeface.BOLD_ITALIC
+        isBold -> Typeface.BOLD
+        isItalic -> Typeface.ITALIC
+        else -> Typeface.NORMAL
+    }
     return when (this) {
-        PdfFont.DEFAULT -> Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        PdfFont.SERIF -> Typeface.create(Typeface.SERIF, Typeface.BOLD)
-        PdfFont.CURSIVE -> Typeface.create("cursive", Typeface.BOLD)
+        PdfFont.DEFAULT -> Typeface.create(Typeface.DEFAULT, style)
+        PdfFont.SERIF -> Typeface.create(Typeface.SERIF, style)
+        PdfFont.CURSIVE -> Typeface.create("cursive", style)
         PdfFont.KALPANA -> {
             val customTypeface = ResourcesCompat.getFont(context, R.font.kalpana)
-            // ফন্টটা লোড হলে সেটাকে বোল্ড স্টাইল করে দিচ্ছি, না পেলে ডিফল্টটা দেখাবে
-            Typeface.create(customTypeface, Typeface.BOLD) ?: Typeface.DEFAULT_BOLD
+            // ফন্টটা লোড হলে সেটাকে সঠিক স্টাইল করে দিচ্ছি, না পেলে ডিফল্টটা দেখাবে
+            Typeface.create(customTypeface, style) ?: Typeface.create(Typeface.DEFAULT, style)
         }
     }
 }

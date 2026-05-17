@@ -35,5 +35,6 @@ data class PdfEditorState(
     // --- নতুন: স্ক্রিনের সাইজ মেপে রাখার জন্য ---
     val canvasWidth: Float = 1f,
     val canvasHeight: Float = 1f,
-    val savedFileUri: Uri? = null // নতুন: সেভ করা ফাইলের URI
+    val savedFileUri: Uri? = null, // নতুন: সেভ করা ফাইলের URI
+    val selectedTextIndex: Int? = null // নতুন: সিলেক্টেড টেক্সট ইনডেক্স
 )

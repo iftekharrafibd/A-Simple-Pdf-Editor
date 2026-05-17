@@ -8,7 +8,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 
-// @Inject constructor এর মাধ্যমে Hilt অটোমেটিকভাবে PdfDao সাপ্লাই দেবে
 class PdfRepositoryImpl @Inject constructor(
     private val dao: PdfDao
 ) : PdfRepository {

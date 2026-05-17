@@ -2,7 +2,6 @@ package com.iftekharrafi.asimplepdfeditor.presentation.editor
 
 import android.app.Application
 import android.content.ContentValues
-import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PorterDuff
@@ -20,14 +19,15 @@ import android.text.TextPaint
 import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.core.graphics.createBitmap
+import androidx.core.graphics.withSave
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.iftekharrafi.asimplepdfeditor.domain.model.DrawingStroke
 import com.iftekharrafi.asimplepdfeditor.domain.model.PageContent
 import com.iftekharrafi.asimplepdfeditor.domain.model.PdfFont
 import com.iftekharrafi.asimplepdfeditor.domain.model.RecentPdf
+import com.iftekharrafi.asimplepdfeditor.domain.model.TextOverlay
 import com.iftekharrafi.asimplepdfeditor.domain.repository.PdfRepository
 import com.iftekharrafi.asimplepdfeditor.presentation.editor.mapper.toNativeTypeface
 import com.tom_roush.pdfbox.pdmodel.PDDocument
@@ -41,7 +41,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
-import androidx.core.graphics.withSave
 
 @HiltViewModel
 class PdfViewModel @Inject constructor(
@@ -144,42 +143,55 @@ class PdfViewModel @Inject constructor(
     }
 
     // --- টেক্সট কন্ট্রোল (আপডেটেড) ---
-    fun onTextChanged(newText: String) {
-        updateCurrentPageContent { content ->
-            content.copy(textOverlay = content.textOverlay.copy(text = newText))
-        }
-    }
-    fun onTextSizeChanged(width: Float, height: Float) {
+    private fun updateSelectedTextOverlay(update: (TextOverlay) -> TextOverlay) {
+        val selectedIndex = _state.value.selectedTextIndex ?: return
         updateCurrentPageContent { pageContent ->
-            pageContent.copy(
-                textOverlay = pageContent.textOverlay.copy(
-                    uiWidth = width,
-                    uiHeight = height
-                )
-            )
-        }
-    }
-    fun onColorChanged(newColorArgb: Int) {
-        updateCurrentPageContent { content ->
-            content.copy(textOverlay = content.textOverlay.copy(colorArgb = newColorArgb))
+            val updatedOverlays = pageContent.textOverlays.toMutableList().apply {
+                if (selectedIndex in indices) {
+                    this[selectedIndex] = update(this[selectedIndex])
+                }
+            }
+            pageContent.copy(textOverlays = updatedOverlays)
         }
     }
 
+    fun onTextChanged(newText: String) {
+        updateSelectedTextOverlay { it.copy(text = newText) }
+    }
+    fun onTextSizeChanged(width: Float, height: Float) {
+        updateSelectedTextOverlay { it.copy(uiWidth = width, uiHeight = height) }
+    }
+    fun onColorChanged(newColorArgb: Int) {
+        updateSelectedTextOverlay { it.copy(colorArgb = newColorArgb) }
+    }
+
     fun onTextTransformed(panX: Float, panY: Float, zoomChange: Float, rotationChange: Float) {
-        updateCurrentPageContent { content ->
-            val currentOverlay = content.textOverlay
-            content.copy(
-                textOverlay = currentOverlay.copy(
-                    offsetX = currentOverlay.offsetX + panX,
-                    offsetY = currentOverlay.offsetY + panY,
-                    scale = (currentOverlay.scale * zoomChange).coerceIn(0.5f, 5f),
-                    rotation = currentOverlay.rotation + rotationChange
-                )
+        updateSelectedTextOverlay { currentOverlay ->
+            currentOverlay.copy(
+                offsetX = currentOverlay.offsetX + panX,
+                offsetY = currentOverlay.offsetY + panY,
+                scale = (currentOverlay.scale * zoomChange).coerceIn(0.5f, 5f),
+                rotation = currentOverlay.rotation + rotationChange
             )
         }
     }
     fun onFontChanged(newFont: PdfFont) {
-        updateCurrentPageContent { it.copy(textOverlay = it.textOverlay.copy(font = newFont)) }
+        updateSelectedTextOverlay { it.copy(font = newFont) }
+    }
+    fun onAlignmentChanged(newAlignment: String) {
+        updateSelectedTextOverlay { it.copy(alignment = newAlignment) }
+    }
+    fun onStyleBoldToggled() {
+        updateSelectedTextOverlay { it.copy(isBold = !it.isBold) }
+    }
+    fun onStyleItalicToggled() {
+        updateSelectedTextOverlay { it.copy(isItalic = !it.isItalic) }
+    }
+    fun onStyleUnderlineToggled() {
+        updateSelectedTextOverlay { it.copy(isUnderline = !it.isUnderline) }
+    }
+    fun selectTextOverlay(index: Int) {
+        _state.update { it.copy(selectedTextIndex = index) }
     }
     // --- ড্রয়িং কন্ট্রোল (আপডেটেড) ---
     fun addStroke(stroke: DrawingStroke) {
@@ -227,6 +239,42 @@ class PdfViewModel @Inject constructor(
                 isBottomSheetVisible = true
             )
         }
+        if (tool == EditorTool.TEXT) {
+            val currentState = _state.value
+            val currentIndex = currentState.currentPageIndex
+            val pageContent = currentState.pageContents[currentIndex] ?: PageContent()
+            val selectedIndex = currentState.selectedTextIndex
+            
+            if (selectedIndex == null || selectedIndex !in pageContent.textOverlays.indices) {
+                val newOverlay = TextOverlay(text = "enter your text here")
+                val newIndex = pageContent.textOverlays.size
+                _state.update { it.copy(selectedTextIndex = newIndex) }
+                updateCurrentPageContent { content ->
+                    content.copy(textOverlays = content.textOverlays + newOverlay)
+                }
+            }
+        } else {
+            _state.update { it.copy(selectedTextIndex = null) }
+        }
+    }
+
+    fun addNewTextOverlay() {
+        _state.update {
+            it.copy(
+                selectedTool = EditorTool.TEXT,
+                isBottomSheetVisible = true
+            )
+        }
+        val currentState = _state.value
+        val currentIndex = currentState.currentPageIndex
+        val pageContent = currentState.pageContents[currentIndex] ?: PageContent()
+        
+        val newOverlay = TextOverlay(text = "enter your text here")
+        val newIndex = pageContent.textOverlays.size
+        _state.update { it.copy(selectedTextIndex = newIndex) }
+        updateCurrentPageContent { content ->
+            content.copy(textOverlays = content.textOverlays + newOverlay)
+        }
     }
 
     fun dismissBottomSheet() {
@@ -255,7 +303,7 @@ class PdfViewModel @Inject constructor(
                 // ২. শুধু যেসব পেজে এডিট আছে, সেগুলো নিয়ে কাজ করব
                 for (i in 0 until totalPages) {
                     val pageContent = currentState.pageContents[i]
-                    val hasEdits = pageContent != null && (pageContent.drawnStrokes.isNotEmpty() || pageContent.textOverlay.text.isNotEmpty())
+                    val hasEdits = pageContent != null && (pageContent.drawnStrokes.isNotEmpty() || pageContent.textOverlays.any { it.text.isNotEmpty() })
 
                     if (hasEdits) {
                         val page = document.getPage(i)
@@ -310,78 +358,92 @@ class PdfViewModel @Inject constructor(
                         }
 
                         // ২. টেক্সট রেন্ডার করা (Absolute Layout Strategy - Pro Level)
-                        val textOverlay = pageContent.textOverlay
-                        if (textOverlay.text.isNotEmpty() && textOverlay.uiWidth > 0f) {
+                        pageContent.textOverlays.forEach { textOverlay ->
+                            if (textOverlay.text.isNotEmpty() && textOverlay.uiWidth > 0f) {
 
-                            // StaticLayout এর জন্য TextPaint ব্যবহার করা হলো
-                            val textPaint = TextPaint().apply {
-                                color = textOverlay.colorArgb
+                                // StaticLayout এর জন্য TextPaint ব্যবহার করা হলো
+                                val textPaint = TextPaint().apply {
+                                    color = textOverlay.colorArgb
 
-                                // --- দ্য আল্টিমেট ম্যাজিক ফিক্স: SP to PX Conversion ---
-                                val baseTextSizePx = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                                    24f * context.resources.configuration.fontScale * context.resources.displayMetrics.density
-                                } else {
-                                    @Suppress("DEPRECATION")
-                                    24f * context.resources.displayMetrics.scaledDensity
+                                    // --- দ্য আল্টিমেট ম্যাজিক ফিক্স: SP to PX Conversion ---
+                                    val baseTextSizePx = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                                        24f * context.resources.configuration.fontScale * context.resources.displayMetrics.density
+                                    } else {
+                                        @Suppress("DEPRECATION")
+                                        24f * context.resources.displayMetrics.scaledDensity
+                                    }
+
+                                    textSize = baseTextSizePx * scaleX
+                                    typeface = textOverlay.font.toNativeTypeface(context, textOverlay.isBold, textOverlay.isItalic)
+                                    isAntiAlias = true
+                                    
+                                    // Custom text styles
+                                    isFakeBoldText = textOverlay.isBold
+                                    if (textOverlay.isItalic) {
+                                        textSkewX = -0.25f
+                                    }
+                                    isUnderlineText = textOverlay.isUnderline
+                                }
+                                // --- WYSIWYG Alignment Fix ---
+                                val nativeAlignment = when (textOverlay.alignment) {
+                                    "LEFT" -> Layout.Alignment.ALIGN_NORMAL
+                                    "RIGHT" -> Layout.Alignment.ALIGN_OPPOSITE
+                                    else -> Layout.Alignment.ALIGN_CENTER
                                 }
 
-                                textSize = baseTextSizePx * scaleX
-                                typeface = textOverlay.font.toNativeTypeface(context)
-                                isAntiAlias = true
-                                isFakeBoldText = true
-                            }
-                            // By using `isFakeBoldText = true`, Native HarfBuzz perfectly matches Compose Skia's synthetic bold width.
-                            // We still add a tiny 4px buffer to absorb any fractional pixel rounding differences.
-                            val textWidth = (textOverlay.uiWidth * scaleX).toInt() + 4
+                                // By using `isFakeBoldText = textOverlay.isBold`, Native HarfBuzz perfectly matches Compose Skia's synthetic bold width.
+                                // We still add a tiny 4px buffer to absorb any fractional pixel rounding differences.
+                                val textWidth = (textOverlay.uiWidth * scaleX).toInt() + 4
 
-                            // 1st Pass: Build default StaticLayout to measure Native line count and height
-                            var staticLayout =
-                                StaticLayout.Builder.obtain(textOverlay.text, 0, textOverlay.text.length, textPaint, textWidth)
-                                    .setAlignment(Layout.Alignment.ALIGN_CENTER)
-                                    .setLineSpacing(0f, 1.0f)
-                                    .setBreakStrategy(LineBreaker.BREAK_STRATEGY_HIGH_QUALITY)
-                                    .setIncludePad(false)
-                                    .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
-                                    .build()
+                                // 1st Pass: Build default StaticLayout to measure Native line count and height
+                                var staticLayout =
+                                    StaticLayout.Builder.obtain(textOverlay.text, 0, textOverlay.text.length, textPaint, textWidth)
+                                        .setAlignment(nativeAlignment)
+                                        .setLineSpacing(0f, 1.0f)
+                                        .setBreakStrategy(LineBreaker.BREAK_STRATEGY_HIGH_QUALITY)
+                                        .setIncludePad(false)
+                                        .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
+                                        .build()
 
-                            // --- WYSIWYG Fix 5: Force Line Spacing (Height) Matching ---
-                            // Native Bengali fonts (like Kalpana) often have massive default line gaps that Compose ignores.
-                            // We mathematically force Native line spacing to match the Compose UI height.
-                            val nativeUiHeight = textOverlay.uiHeight * scaleY
-                            
-                            if (staticLayout.lineCount > 1) {
-                                // How much total height needs to be added/removed?
-                                val heightDiff = nativeUiHeight - staticLayout.height
-                                // Spread the difference across the line gaps
-                                val lineSpacingAdjustment = heightDiff / (staticLayout.lineCount - 1)
+                                // --- WYSIWYG Fix 5: Force Line Spacing (Height) Matching ---
+                                // Native Bengali fonts (like Kalpana) often have massive default line gaps that Compose ignores.
+                                // We mathematically force Native line spacing to match the Compose UI height.
+                                val nativeUiHeight = textOverlay.uiHeight * scaleY
+                                
+                                if (staticLayout.lineCount > 1) {
+                                    // How much total height needs to be added/removed?
+                                    val heightDiff = nativeUiHeight - staticLayout.height
+                                    // Spread the difference across the line gaps
+                                    val lineSpacingAdjustment = heightDiff / (staticLayout.lineCount - 1)
 
-                                // 2nd Pass: Rebuild with the EXACT calculated line spacing
-                                staticLayout = StaticLayout.Builder.obtain(textOverlay.text, 0, textOverlay.text.length, textPaint, textWidth)
-                                    .setAlignment(Layout.Alignment.ALIGN_CENTER)
-                                    .setLineSpacing(lineSpacingAdjustment, 1.0f)
-                                    .setBreakStrategy(LineBreaker.BREAK_STRATEGY_HIGH_QUALITY)
-                                    .setIncludePad(false)
-                                    .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
-                                    .build()
-                            }
+                                    // 2nd Pass: Rebuild with the EXACT calculated line spacing
+                                    staticLayout = StaticLayout.Builder.obtain(textOverlay.text, 0, textOverlay.text.length, textPaint, textWidth)
+                                        .setAlignment(nativeAlignment)
+                                        .setLineSpacing(lineSpacingAdjustment, 1.0f)
+                                        .setBreakStrategy(LineBreaker.BREAK_STRATEGY_HIGH_QUALITY)
+                                        .setIncludePad(false)
+                                        .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE)
+                                        .build()
+                                }
 
-                            val centerX = bmpWidth / 2f
-                            val centerY = bmpHeight / 2f
-                            val textX = centerX + (textOverlay.offsetX * scaleX)
-                            val textY = centerY + (textOverlay.offsetY * scaleY)
+                                val centerX = bmpWidth / 2f
+                                val centerY = bmpHeight / 2f
+                                val textX = centerX + (textOverlay.offsetX * scaleX)
+                                val textY = centerY + (textOverlay.offsetY * scaleY)
 
-                            nativeCanvas.withSave {
-                                val translateX = textX - (textWidth / 2f)
-                                val translateY = textY - (nativeUiHeight / 2f)
-                                translate(translateX, translateY)
+                                nativeCanvas.withSave {
+                                    val translateX = textX - (textWidth / 2f)
+                                    val translateY = textY - (nativeUiHeight / 2f)
+                                    translate(translateX, translateY)
 
-                                val pivotX = textWidth / 2f
-                                val pivotY = nativeUiHeight / 2f
+                                    val pivotX = textWidth / 2f
+                                    val pivotY = nativeUiHeight / 2f
 
-                                rotate(textOverlay.rotation, pivotX, pivotY)
-                                scale(textOverlay.scale, textOverlay.scale, pivotX, pivotY)
+                                    rotate(textOverlay.rotation, pivotX, pivotY)
+                                    scale(textOverlay.scale, textOverlay.scale, pivotX, pivotY)
 
-                                staticLayout.draw(this)
+                                    staticLayout.draw(this)
+                                }
                             }
                         }
 
@@ -410,31 +472,19 @@ class PdfViewModel @Inject constructor(
                 val fileName = "AmarPDF_Pro_${System.currentTimeMillis()}.pdf"
                 var finalUri: Uri? = null
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val resolver = context.contentResolver
-                    val contentValues = ContentValues().apply {
-                        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                        put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
-                        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AmarPDF")
-                    }
+                val resolver = context.contentResolver
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AmarPDF")
+                }
 
-                    val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                    if (uri != null) {
-                        resolver.openOutputStream(uri)?.use { outputStream ->
-                            document.save(outputStream) // PdfBox দিয়ে সেভ
-                        }
-                        finalUri = uri
-                    }
-                } else {
-                    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                    val folder = java.io.File(downloadsDir, "AmarPDF")
-                    if (!folder.exists()) folder.mkdirs()
-
-                    val file = java.io.File(folder, fileName)
-                    java.io.FileOutputStream(file).use { outputStream ->
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                if (uri != null) {
+                    resolver.openOutputStream(uri)?.use { outputStream ->
                         document.save(outputStream) // PdfBox দিয়ে সেভ
                     }
-                    finalUri = Uri.fromFile(file)
+                    finalUri = uri
                 }
 
                 document.close() // ডকুমেন্ট ক্লোজ করা
