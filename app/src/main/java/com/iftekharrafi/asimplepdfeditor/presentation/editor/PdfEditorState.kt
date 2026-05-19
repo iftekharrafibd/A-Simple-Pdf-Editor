@@ -15,6 +15,7 @@ enum class EditorTool {
 
 data class PdfEditorState(
     val pdfBitmap: Bitmap? = null,
+    val pdfBitmaps: Map<Int, Bitmap> = emptyMap(),
     val currentPageIndex: Int = 0,
     val pageCount: Int = 0,
 
@@ -36,5 +37,7 @@ data class PdfEditorState(
     val canvasWidth: Float = 1f,
     val canvasHeight: Float = 1f,
     val savedFileUri: Uri? = null, // নতুন: সেভ করা ফাইলের URI
-    val selectedTextIndex: Int? = null // নতুন: সিলেক্টেড টেক্সট ইনডেক্স
+    val selectedTextIndex: Pair<Int, Int>? = null, // নতুন: (pageIndex, textOverlayIndex)
+    val canUndo: Boolean = false,
+    val canRedo: Boolean = false
 )

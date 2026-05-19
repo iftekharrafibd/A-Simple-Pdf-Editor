@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.automirrored.filled.Redo
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,6 +37,8 @@ fun CustomTopBar(
     state: PdfEditorState,
     onBackClick: () -> Unit,
     savePdf: () -> Unit,
+    onUndoClick: () -> Unit,
+    onRedoClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
@@ -80,21 +84,52 @@ fun CustomTopBar(
             }
         }
 
-        // সেভ বাটন
-        if (state.pdfBitmap != null) {
-            IconButton(
-                onClick = {
-                    if (!state.isSaving) {
-                      savePdf()
-                    }
+        // Actions: Undo, Redo, Save
+        if (state.pageCount > 0) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Undo Button
+                IconButton(
+                    onClick = onUndoClick,
+                    enabled = state.canUndo
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Undo,
+                        contentDescription = "Undo",
+                        tint = if (state.canUndo) Color.White else Color.White.copy(alpha = 0.3f),
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Save,
-                    contentDescription = "Save PDF",
-                    tint = if (state.isSaving) Color.Gray else AccentBlue,
-                    modifier = Modifier.size(28.dp)
-                )
+
+                // Redo Button
+                IconButton(
+                    onClick = onRedoClick,
+                    enabled = state.canRedo
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.Redo,
+                        contentDescription = "Redo",
+                        tint = if (state.canRedo) Color.White else Color.White.copy(alpha = 0.3f),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                // সেভ বাটন
+                IconButton(
+                    onClick = {
+                        if (!state.isSaving) {
+                            savePdf()
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Save,
+                        contentDescription = "Save PDF",
+                        tint = if (state.isSaving) Color.Gray else AccentBlue,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
             }
         }
     }

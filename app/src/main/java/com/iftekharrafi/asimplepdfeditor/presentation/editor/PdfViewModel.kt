@@ -1,7 +1,6 @@
 package com.iftekharrafi.asimplepdfeditor.presentation.editor
 
 import android.app.Application
-import android.content.ContentValues
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PorterDuff
@@ -10,9 +9,7 @@ import android.graphics.pdf.PdfRenderer
 import android.graphics.text.LineBreaker
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.os.ParcelFileDescriptor
-import android.provider.MediaStore
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
@@ -30,6 +27,7 @@ import com.iftekharrafi.asimplepdfeditor.domain.model.RecentPdf
 import com.iftekharrafi.asimplepdfeditor.domain.model.TextOverlay
 import com.iftekharrafi.asimplepdfeditor.domain.repository.PdfRepository
 import com.iftekharrafi.asimplepdfeditor.presentation.editor.mapper.toNativeTypeface
+import com.iftekharrafi.asimplepdfeditor.utils.getFileName
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPageContentStream
 import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
@@ -59,7 +57,19 @@ class PdfViewModel @Inject constructor(
     // are serialized and never run concurrently (PdfRenderer is NOT thread-safe)
     private val renderDispatcher = Dispatchers.IO.limitedParallelism(1)
 
-    fun loadPdf(uri: Uri) {
+    // A map of page index to list of undone strokes for Redo support
+    private val undoneStrokesMap = mutableMapOf<Int, List<DrawingStroke>>()
+
+    // LRU cache to store page bitmaps and prevent OutOfMemory crashes (holds max 5 pages)
+    private val lruCache = object : android.util.LruCache<Int, android.graphics.Bitmap>(5) {
+        override fun entryRemoved(evicted: Boolean, key: Int?, oldValue: android.graphics.Bitmap?, newValue: android.graphics.Bitmap?) {
+            // Memory is reclaimed naturally by standard Android JVM Garbage Collection
+        }
+    }
+
+    fun loadPdf(uri: Uri, initialPageIndex: Int = 0) {
+        undoneStrokesMap.clear()
+        lruCache.evictAll()
         // লোডিং শুরু করার আগে আগের পিডিএফ ক্লিয়ার করে দাও
         _state.update { PdfEditorState() }
 
@@ -71,18 +81,58 @@ class PdfViewModel @Inject constructor(
                     ?: throw Exception("ফাইলটি খুঁজে পাওয়া যাচ্ছে না বা পারমিশন নেই")
 
                 pdfRenderer = PdfRenderer(fileDescriptor!!)
+                val count = pdfRenderer!!.pageCount
                 _state.update {
                     it.copy(
-                        pageCount = pdfRenderer!!.pageCount,
-                        currentPageIndex = 0
+                        pageCount = count,
+                        currentPageIndex = initialPageIndex
                     )
                 }
-                renderPage(0)
+
+                updateUndoRedoAvailability()
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
                     Toast.makeText(getApplication(), "Error: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
+            }
+        }
+    }
+
+    fun requestPageBitmap(pageIndex: Int) {
+        if (pdfRenderer == null) return
+
+        // 1. Cache Hit: Reactively expose LruCache contents to State Flow
+        val cached = lruCache.get(pageIndex)
+        if (cached != null) {
+            if (!_state.value.pdfBitmaps.containsKey(pageIndex)) {
+                _state.update { it.copy(pdfBitmaps = lruCache.snapshot()) }
+            }
+            return
+        }
+
+        // 2. Cache Miss: Render on the single-threaded rendering background dispatcher
+        viewModelScope.launch(renderDispatcher) {
+            try {
+                pdfRenderer?.let { renderer ->
+                    if (pageIndex in 0 until renderer.pageCount) {
+                        val page = renderer.openPage(pageIndex)
+                        val bitmap = createBitmap(page.width * 2, page.height * 2)
+                        bitmap.eraseColor(android.graphics.Color.WHITE)
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        page.close()
+
+                        lruCache.put(pageIndex, bitmap)
+                        _state.update { currentState ->
+                            currentState.copy(
+                                pdfBitmaps = lruCache.snapshot(),
+                                pdfBitmap = if (pageIndex == 0) bitmap else currentState.pdfBitmap
+                            )
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
     }
@@ -117,7 +167,7 @@ class PdfViewModel @Inject constructor(
         if (currentState.currentPageIndex < currentState.pageCount - 1) {
             val nextIndex = currentState.currentPageIndex + 1
             _state.update { it.copy(currentPageIndex = nextIndex) }
-            viewModelScope.launch(renderDispatcher) { renderPage(nextIndex) }
+            updateUndoRedoAvailability()
         }
     }
 
@@ -126,10 +176,15 @@ class PdfViewModel @Inject constructor(
         if (currentState.currentPageIndex > 0) {
             val prevIndex = currentState.currentPageIndex - 1
             _state.update { it.copy(currentPageIndex = prevIndex) }
-            viewModelScope.launch(renderDispatcher) { renderPage(prevIndex) }
+            updateUndoRedoAvailability()
         }
     }
-
+    fun setCurrentPageIndex(index: Int) {
+        if (index in 0 until _state.value.pageCount) {
+            _state.update { it.copy(currentPageIndex = index) }
+            updateUndoRedoAvailability()
+        }
+    }
     // --- পেজ কন্টেন্ট আপডেট করার প্রো-লেভেল হেল্পার ফাংশন ---
     private fun updateCurrentPageContent(update: (PageContent) -> PageContent) {
         _state.update { currentState ->
@@ -140,18 +195,33 @@ class PdfViewModel @Inject constructor(
             // Map-এর ভেতরে বর্তমান পেজের ডেটা রিপ্লেস করে দাও
             currentState.copy(pageContents = currentState.pageContents + (currentIndex to newContent))
         }
+        updateUndoRedoAvailability()
+    }
+
+    private fun updateUndoRedoAvailability() {
+        val currentState = _state.value
+        val pageIndex = currentState.currentPageIndex
+        val pageContent = currentState.pageContents[pageIndex] ?: PageContent()
+        val canUndo = pageContent.drawnStrokes.isNotEmpty()
+        val canRedo = (undoneStrokesMap[pageIndex] ?: emptyList()).isNotEmpty()
+        
+        _state.update { it.copy(canUndo = canUndo, canRedo = canRedo) }
     }
 
     // --- টেক্সট কন্ট্রোল (আপডেটেড) ---
     private fun updateSelectedTextOverlay(update: (TextOverlay) -> TextOverlay) {
-        val selectedIndex = _state.value.selectedTextIndex ?: return
-        updateCurrentPageContent { pageContent ->
+        val selection = _state.value.selectedTextIndex ?: return
+        val pageIndex = selection.first
+        val selectedIndex = selection.second
+        _state.update { currentState ->
+            val pageContent = currentState.pageContents[pageIndex] ?: PageContent()
             val updatedOverlays = pageContent.textOverlays.toMutableList().apply {
                 if (selectedIndex in indices) {
                     this[selectedIndex] = update(this[selectedIndex])
                 }
             }
-            pageContent.copy(textOverlays = updatedOverlays)
+            val newContents = currentState.pageContents + (pageIndex to pageContent.copy(textOverlays = updatedOverlays))
+            currentState.copy(pageContents = newContents)
         }
     }
 
@@ -190,11 +260,19 @@ class PdfViewModel @Inject constructor(
     fun onStyleUnderlineToggled() {
         updateSelectedTextOverlay { it.copy(isUnderline = !it.isUnderline) }
     }
-    fun selectTextOverlay(index: Int) {
-        _state.update { it.copy(selectedTextIndex = index) }
+    fun selectTextOverlay(pageIndex: Int, index: Int?) {
+        _state.update { 
+            it.copy(
+                selectedTextIndex = if (index != null) Pair(pageIndex, index) else null
+            )
+        }
     }
     // --- ড্রয়িং কন্ট্রোল (আপডেটেড) ---
     fun addStroke(stroke: DrawingStroke) {
+        val pageIndex = _state.value.currentPageIndex
+        // Clear redo stack for this page since a new stroke was added
+        undoneStrokesMap[pageIndex] = emptyList()
+
         updateCurrentPageContent { content ->
             content.copy(drawnStrokes = content.drawnStrokes + stroke)
         }
@@ -206,10 +284,35 @@ class PdfViewModel @Inject constructor(
     }
 
     fun undoLastStroke() {
-        updateCurrentPageContent { content ->
-            if (content.drawnStrokes.isNotEmpty()) {
-                content.copy(drawnStrokes = content.drawnStrokes.dropLast(1))
-            } else content
+        val pageIndex = _state.value.currentPageIndex
+        val currentState = _state.value
+        val pageContent = currentState.pageContents[pageIndex] ?: PageContent()
+
+        if (pageContent.drawnStrokes.isNotEmpty()) {
+            val lastStroke = pageContent.drawnStrokes.last()
+            val remainingStrokes = pageContent.drawnStrokes.dropLast(1)
+
+            // Add to redo stack
+            val currentUndone = undoneStrokesMap[pageIndex] ?: emptyList()
+            undoneStrokesMap[pageIndex] = currentUndone + lastStroke
+
+            updateCurrentPageContent { content ->
+                content.copy(drawnStrokes = remainingStrokes)
+            }
+        }
+    }
+
+    fun redoLastStroke() {
+        val pageIndex = _state.value.currentPageIndex
+        val currentUndone = undoneStrokesMap[pageIndex] ?: emptyList()
+
+        if (currentUndone.isNotEmpty()) {
+            val strokeToRedo = currentUndone.last()
+            undoneStrokesMap[pageIndex] = currentUndone.dropLast(1)
+
+            updateCurrentPageContent { content ->
+                content.copy(drawnStrokes = content.drawnStrokes + strokeToRedo)
+            }
         }
     }
     fun setBrushSize(size: Float) {
@@ -220,11 +323,27 @@ class PdfViewModel @Inject constructor(
     fun onPdfTransformed(panX: Float, panY: Float, zoomChange: Float) {
         _state.update {
             val newScale = (it.pdfScale * zoomChange).coerceIn(1f, 5f)
-            it.copy(
-                pdfScale = newScale,
-                pdfOffsetX = it.pdfOffsetX + panX,
-                pdfOffsetY = it.pdfOffsetY + panY
-            )
+            if (newScale == 1f) {
+                it.copy(
+                    pdfScale = newScale,
+                    pdfOffsetX = 0f,
+                    pdfOffsetY = 0f
+                )
+            } else {
+                // Mathematically clamp translation offsets based on screen size (canvasWidth/canvasHeight) and pdfScale,
+                // so the user cannot pan the zoomed PDF completely off the screen
+                val maxOffsetX = (it.canvasWidth * (newScale - 1f)) / 2f
+                val maxOffsetY = (it.canvasHeight * (newScale - 1f)) / 2f
+                
+                val boundedOffsetX = (it.pdfOffsetX + panX).coerceIn(-maxOffsetX, maxOffsetX)
+                val boundedOffsetY = (it.pdfOffsetY + panY).coerceIn(-maxOffsetY, maxOffsetY)
+
+                it.copy(
+                    pdfScale = newScale,
+                    pdfOffsetX = boundedOffsetX,
+                    pdfOffsetY = boundedOffsetY
+                )
+            }
         }
     }
     fun onCanvasSizeChanged(width: Float, height: Float) {
@@ -245,10 +364,10 @@ class PdfViewModel @Inject constructor(
             val pageContent = currentState.pageContents[currentIndex] ?: PageContent()
             val selectedIndex = currentState.selectedTextIndex
             
-            if (selectedIndex == null || selectedIndex !in pageContent.textOverlays.indices) {
+            if (selectedIndex == null || selectedIndex.first != currentIndex || selectedIndex.second !in pageContent.textOverlays.indices) {
                 val newOverlay = TextOverlay(text = "enter your text here")
                 val newIndex = pageContent.textOverlays.size
-                _state.update { it.copy(selectedTextIndex = newIndex) }
+                _state.update { it.copy(selectedTextIndex = Pair(currentIndex, newIndex)) }
                 updateCurrentPageContent { content ->
                     content.copy(textOverlays = content.textOverlays + newOverlay)
                 }
@@ -271,7 +390,7 @@ class PdfViewModel @Inject constructor(
         
         val newOverlay = TextOverlay(text = "enter your text here")
         val newIndex = pageContent.textOverlays.size
-        _state.update { it.copy(selectedTextIndex = newIndex) }
+        _state.update { it.copy(selectedTextIndex = Pair(currentIndex, newIndex)) }
         updateCurrentPageContent { content ->
             content.copy(textOverlays = content.textOverlays + newOverlay)
         }
@@ -280,6 +399,12 @@ class PdfViewModel @Inject constructor(
     fun dismissBottomSheet() {
         _state.update {
             it.copy(isBottomSheetVisible = false)
+        }
+    }
+
+    fun clearSavedFileUri() {
+        _state.update {
+            it.copy(savedFileUri = null)
         }
     }
 
@@ -294,9 +419,13 @@ class PdfViewModel @Inject constructor(
                 val context = getApplication<Application>().applicationContext
                 val currentState = _state.value
 
+                var fileName = ""
+                var finalUri: Uri? = null
+
                 // ১. অরিজিনাল পিডিএফ ফাইলটা লোড করা হচ্ছে (PdfBox দিয়ে)
-                val inputStream = context.contentResolver.openInputStream(originalPdfUri)
-                val document = PDDocument.load(inputStream)
+                context.contentResolver.openInputStream(originalPdfUri).use { inputStream ->
+                    val document = PDDocument.load(inputStream)
+                    try {
 
                 val totalPages = document.numberOfPages
 
@@ -324,7 +453,7 @@ class PdfViewModel @Inject constructor(
                         val scaleY = bmpHeight.toFloat() / currentState.canvasHeight
 
                         // ১. ড্রয়িং রেন্ডার করা (using StrokePoints)
-                        if (pageContent!!.drawnStrokes.isNotEmpty()) {
+                        if (pageContent.drawnStrokes.isNotEmpty()) {
                             val paint = Paint().apply {
                                 style = Paint.Style.STROKE
                                 strokeCap = Paint.Cap.ROUND
@@ -468,26 +597,26 @@ class PdfViewModel @Inject constructor(
                     _state.update { it.copy(savingProgress = progress) }
                 }
 
-                // ৩. নতুন ফাইল হিসেবে সেভ করা
-                val fileName = "AmarPDF_Pro_${System.currentTimeMillis()}.pdf"
-                var finalUri: Uri? = null
-
-                val resolver = context.contentResolver
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-                    put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/AmarPDF")
+                // ৩. এডিট এবং সেভ করার পর ফাইলের নামের আগে "Edited_" যোগ করা হবে
+                val originalName = originalPdfUri.getFileName(context)
+                val targetName = if (originalName.startsWith("Edited_")) {
+                    originalName
+                } else {
+                    "Edited_${originalName}"
                 }
+                
+                val internalFile = java.io.File(context.filesDir, targetName)
+                fileName = internalFile.name
 
-                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                if (uri != null) {
-                    resolver.openOutputStream(uri)?.use { outputStream ->
-                        document.save(outputStream) // PdfBox দিয়ে সেভ
+                java.io.FileOutputStream(internalFile).use { outputStream ->
+                    document.save(outputStream) // PdfBox দিয়ে সেভ
+                }
+                finalUri = Uri.fromFile(internalFile)
+
+                    } finally {
+                        document.close() // ডকুমেন্ট ক্লোজ করা
                     }
-                    finalUri = uri
                 }
-
-                document.close() // ডকুমেন্ট ক্লোজ করা
 
                 withContext(Dispatchers.Main) {
                     finalUri?.let { savedUri ->
@@ -502,7 +631,7 @@ class PdfViewModel @Inject constructor(
                         }
                         _state.update { it.copy(savedFileUri = savedUri) }
                     }
-                    Toast.makeText(context, "Saved & Added to Recent!", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "Saved to Internal Storage!", Toast.LENGTH_LONG).show()
                 }
 
             } catch (e: Exception) {

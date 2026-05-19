@@ -1,7 +1,10 @@
 package com.iftekharrafi.asimplepdfeditor.presentation.home
 
 
+import android.graphics.Bitmap
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.ParcelFileDescriptor
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.LinearEasing
@@ -11,6 +14,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -31,33 +35,46 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Draw
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.SaveAlt
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TextFields
 import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.PictureAsPdf
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.core.net.toUri
+import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import com.iftekharrafi.asimplepdfeditor.domain.model.RecentPdf
 import com.iftekharrafi.asimplepdfeditor.ui.theme.AccentBlue
 import com.iftekharrafi.asimplepdfeditor.ui.theme.AccentCyan
@@ -67,12 +84,12 @@ import com.iftekharrafi.asimplepdfeditor.ui.theme.EditorBackground
 import com.iftekharrafi.asimplepdfeditor.ui.theme.EditorSurface
 import com.iftekharrafi.asimplepdfeditor.ui.theme.GradientEnd
 import com.iftekharrafi.asimplepdfeditor.ui.theme.GradientStart
+import com.iftekharrafi.asimplepdfeditor.utils.copyToInternalStorage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
-import androidx.compose.ui.platform.LocalLocale
-import androidx.core.net.toUri
-
+import androidx.core.graphics.createBitmap
 
 @Composable
 fun HomeScreen(
@@ -85,11 +102,12 @@ fun HomeScreen(
     val pdfLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
-        uri?.let {
-            // ১. ডেটাবেসে সেভ করা হচ্ছে
-            viewModel.addRecentFile(it, context)
-            // ২. এডিটর স্ক্রিনে পাঠানো হচ্ছে
-            onPdfSelected(it)
+        uri?.let { pickedUri ->
+            // অ্যাপের সিকিউর ইন্টারনাল স্টোরেজে কপি তৈরি করা হচ্ছে যাতে প্রিভিউ এবং এডিটর একই ফাইলে কাজ করে
+            val internalUri = pickedUri.copyToInternalStorage(context)
+            if (internalUri != null) {
+                onPdfSelected(internalUri)
+            }
         }
     }
 
@@ -307,6 +325,15 @@ fun HomeScreen(
                                 val uri = pdf.fileUri.toUri()
                                 viewModel.addRecentFile(uri, context) // টাইম আপডেট করার জন্য
                                 onPdfSelected(uri)
+                            },
+                            onShare = {
+                                viewModel.sharePdf(pdf, context)
+                            },
+                            onExport = {
+                                viewModel.exportPdf(pdf, context)
+                            },
+                            onDelete = {
+                                viewModel.deletePdf(pdf, context)
                             }
                         )
                     }
@@ -361,30 +388,87 @@ fun HomeScreen(
 @Composable
 private fun RecentFileItem(
     pdf: RecentPdf,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onShare: () -> Unit,
+    onExport: () -> Unit,
+    onDelete: () -> Unit
 ) {
+    val context = LocalContext.current
+    var menuExpanded by remember { mutableStateOf(false) }
+    var thumbnailBitmap by remember(pdf.fileUri) { mutableStateOf<Bitmap?>(null) }
+
+    LaunchedEffect(pdf.fileUri) {
+        withContext(Dispatchers.IO) {
+            try {
+                val uri = pdf.fileUri.toUri()
+                val pfd = if (uri.scheme == "file") {
+                    ParcelFileDescriptor.open(java.io.File(uri.path!!), ParcelFileDescriptor.MODE_READ_ONLY)
+                } else {
+                    context.contentResolver.openFileDescriptor(uri, "r")
+                }
+                if (pfd != null) {
+                    val renderer = PdfRenderer(pfd)
+                    if (renderer.pageCount > 0) {
+                        val page = renderer.openPage(0)
+                        val width = 90
+                        val height = 120
+                        val bmp = createBitmap(width, height)
+                        bmp.eraseColor(android.graphics.Color.WHITE)
+                        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        page.close()
+                        withContext(Dispatchers.Main) {
+                            thumbnailBitmap = bmp
+                        }
+                    }
+                    renderer.close()
+                    pfd.close()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(EditorSurface.copy(alpha = 0.6f))
             .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
+            .padding(horizontal = 16.dp, vertical = 18.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(AccentPink.copy(alpha = 0.15f)),
+                .width(48.dp)
+                .height(64.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(Color.White.copy(alpha = 0.05f))
+                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(8.dp)),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = Icons.Outlined.PictureAsPdf,
-                contentDescription = null,
-                modifier = Modifier.size(20.dp),
-                tint = AccentPink
-            )
+            if (thumbnailBitmap != null) {
+                Image(
+                    bitmap = thumbnailBitmap!!.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(AccentPink.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.PictureAsPdf,
+                        contentDescription = null,
+                        modifier = Modifier.size(24.dp),
+                        tint = AccentPink
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.width(14.dp))
@@ -404,6 +488,74 @@ private fun RecentFileItem(
                 style = MaterialTheme.typography.bodySmall,
                 color = Color.White.copy(alpha = 0.4f)
             )
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        Box {
+            IconButton(
+                onClick = { menuExpanded = true },
+                modifier = Modifier.size(36.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.MoreVert,
+                    contentDescription = "Options",
+                    tint = Color.White.copy(alpha = 0.7f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            DropdownMenu(
+                expanded = menuExpanded,
+                onDismissRequest = { menuExpanded = false },
+                modifier = Modifier.background(EditorSurface)
+            ) {
+                DropdownMenuItem(
+                    text = { Text("Share", color = Color.White) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Share,
+                            contentDescription = null,
+                            tint = AccentCyan,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onShare()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Export to Downloads", color = Color.White) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.SaveAlt,
+                            contentDescription = null,
+                            tint = AccentBlue,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onExport()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Delete", color = Color(0xFFE57373)) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = null,
+                            tint = Color(0xFFE57373),
+                            modifier = Modifier.size(20.dp)
+                        )
+                    },
+                    onClick = {
+                        menuExpanded = false
+                        onDelete()
+                    }
+                )
+            }
         }
     }
 }

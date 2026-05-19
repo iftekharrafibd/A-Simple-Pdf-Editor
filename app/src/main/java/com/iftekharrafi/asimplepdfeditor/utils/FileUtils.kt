@@ -29,3 +29,21 @@ fun Uri.getFileName(context: Context): String {
     }
     return result ?: "Unknown_Document.pdf"
 }
+
+// URI থেকে অ্যাপের অভ্যন্তরীণ স্টোরেজে কপি করার ফাংশন
+fun Uri.copyToInternalStorage(context: Context): Uri? {
+    return try {
+        val fileName = this.getFileName(context)
+        val cleanName = fileName.replace(" ", "_")
+        val destFile = java.io.File(context.filesDir, cleanName)
+        context.contentResolver.openInputStream(this)?.use { inputStream ->
+            destFile.outputStream().use { outputStream ->
+                inputStream.copyTo(outputStream)
+            }
+        }
+        Uri.fromFile(destFile)
+    } catch (e: Exception) {
+        e.printStackTrace()
+        null
+    }
+}
